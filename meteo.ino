@@ -1,109 +1,78 @@
 /********************************************************
 ESP8266 (ESP-12E) IoT weather station with:
 -------------------------------------------
-(pin2) DHT22   - humi,temp
-(0x76) BME280  - humi,temp,pressure
-(0x39) TSL2561 - light,IR
-(0x60) SI1145  - lgiht,IR,UV
+(0x76) BME280  - temp,humi,pressure
+(0x60) SI1145  - visible light,IR,UV
+(0x40) HTU21D  - temp,humi
 ********************************************************/
-#include <Wire.h>
 #include <ESP8266WiFi.h>
+#include <DNSServer.h>
+#include <ArduinoJson.h>
+#include <ESP8266WebServer.h>
+#include <WiFiManager.h>
 #include <PubSubClient.h>
-#include <DHT.h>
-#include <TSL2561.h>
+#include <Bme280BoschWrapper.h>
 #include <Adafruit_SI1145.h>
-#include <BME280.h>
-//#include <Adafruit_BME280.h>
-/******************** DEFUALT CONFIGURATION **************/
-const char* WIFI_NAME = "meteo";
-const char* WIFI_SSID = "???????? WIFI NAME ??????????";
-const char* WIFI_PASS = "???????? WIFI PASS ??????????";
-const IPAddress WIFI_IP(192,168,1,10);
-const IPAddress WIFI_GATE(192,168,1,1);
-const char* MQTT_SERVER = "???????? MQTT SERVER ??????????";
-const char* MQTT_USER = "???????? MQTT USER ??????????";
-const char* MQTT_PASS = "???????? MQTT PASS ??????????";
-const int MQTT_PORT = 1883; //18875
-const int ESP_SLEEP = 600; /* SLEEP TIME (s)*/
+#include <SparkFunHTU21D.h>
 /******************** ADC MACRO FOR VCC MESSUREMENT ******/
 ADC_MODE(ADC_VCC);
+/******************** DEFUALT CONFIGURATION **************/
+const int UNIT_NO = 0;
+const char* MQTT_SERVER = "################## MQTT server address goes here ################";
+const char* MQTT_USER = "################## MQTT client name goes here ################";
+const char* MQTT_PASS = "################## MQTT client password goes here ################";
+const int MQTT_PORT = 1883;
+const int ESP_SLEEP = 300; /* SLEEP TIME (s)*/
 /******************** MAIN VARIABLES *********************/
 WiFiClient espClient;
 PubSubClient client(MQTT_SERVER,MQTT_PORT,espClient);
-DHT dht(2, DHT22); // DHT on PIN 2 ...other sensors are on I2C bus
-TSL2561 tsl(TSL2561_ADDR_FLOAT);
 Adafruit_SI1145 si = Adafruit_SI1145();
-BME280 bme;
+Bme280BoschWrapper bme(true);
+HTU21D htu;
+char buff [12];
+char buff2 [256];
+DynamicJsonBuffer jsonBuffer; 
 /******************** SETUP ON BOOT **********************/
-void setup() {
-  Serial.begin(115200);
-  /* SENSORS BEGIN */
-  dht.begin();
-  tsl.begin();
-  //tsl.setGain(TSL2561_GAIN_16X);
-  //tsl.setTiming(TSL2561_INTEGRATIONTIME_13MS);
-  si.begin();
-  bme.begin();
-  /* WIFI CONNECTION */
-  WiFi.mode(WIFI_STA);
-  WiFi.config(WIFI_IP,WIFI_GATE,WIFI_GATE);
-  WiFi.begin(WIFI_SSID,WIFI_PASS);
-  Serial.print("WIFI ");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+void setup(){
+  /* WIFI MANAGER SETUP */
+  WiFiManager wifiManager;
+  if(!wifiManager.autoConnect()){
+    //reset and try again, or maybe put it to deep sleep
+    ESP.reset();
+    delay(1000);
   }
-  Serial.println("CONNECTED.");
-  delay(600);
+  /* SENSORS SETUP */
+  si.begin();
+  bme.beginI2C(0x76);
+  htu.begin();
   /* START MQTT CLIENT */
-  client.connect("ESP",MQTT_USER,MQTT_PASS);
-  Serial.println("MQTT CLIENT CONNECTED.");
+  sprintf(buff, "unit%d", UNIT_NO);
+  client.connect(buff,MQTT_USER,MQTT_PASS);
+  delay(100);
 }
 /******************** MAIN LOOP **************************/
-void loop() {
-  delay(6000);
-  /* DHT22 */
-  float t = dht.readTemperature();
-  client.publish("esp/dht/t",String(t,1).c_str());
-  Serial.print("DHT-t: "); Serial.print(t,1); Serial.print(" C");
-  float h = dht.readHumidity();
-  client.publish("esp/dht/h",String(h,1).c_str());
-  Serial.print("\tDHT-h: "); Serial.print(h,1); Serial.print(" %");
-  /* TSL2561 */
-  uint32_t lum = tsl.getFullLuminosity();
-  uint16_t ir, full;
-  ir = lum >> 16;
-  full = lum & 0xFFFF;
-  int vis = (full - ir);
-  client.publish("esp/tsl/vis",String(vis).c_str());
-  Serial.print("\tTSL-vis: "); Serial.print(vis); Serial.print(" lx");
-  client.publish("esp/tsl/ir",String(ir).c_str());
-  Serial.print("\tTSL-ir: "); Serial.print(ir); Serial.print(" lx");
+void loop(){
   /* SI1145 */
-  uint16_t siv = si.readVisible();
-  uint16_t sii = si.readIR();
-  uint16_t siu = si.readUV();
-  Serial.print("\tSI-vis: "); Serial.print(siv); Serial.print(" lx");
-  client.publish("esp/si/vis",String(siv).c_str());
-  Serial.print("\tSI-ir: "); Serial.print(sii); Serial.print(" lx");
-  client.publish("esp/si/ir",String(sii).c_str());
-  float uvindex = (siu / 100.0);
-  Serial.print("\tSI-uv: ");  Serial.print(uvindex,2); Serial.print(" lx");
-  client.publish("esp/si/uv",String(uvindex,2).c_str());
+  uint16_t v = si.readVisible();
+  uint16_t ir = si.readIR();
+  uint16_t u = si.readUV();
+  float uv = (u / 100.0);
+  /* HTU21D */
+  float h = htu.readHumidity();
+  float t = htu.readTemperature();
   /* BME280 */
-  float temp,humi,pres;
-  bme.ReadData(pres,temp,humi);
-  pres /= 100.0;
-  Serial.print("\tBME-t: "); Serial.print(temp,2); Serial.print(" C");
-  client.publish("esp/bme/t",String(temp,2).c_str());
-  Serial.print("\tBME-h: "); Serial.print(humi,3); Serial.print(" %");
-  client.publish("esp/bme/h",String(humi,3).c_str());
-  Serial.print("\tBME-p: "); Serial.print(pres,3); Serial.print(" hPa");
-  client.publish("esp/bme/p",String(pres,3).c_str());
+  float t,h,p;
+  bme.measure();
+  delay(60);
+  p = bme.getPressureDouble() / 100.0;
   /* VOLTAGE */
-  float bat = (ESP.getVcc() / 1000.0);
-  Serial.print("\tBAT: "); Serial.println(bat,3); Serial.print(" V");
-  client.publish("esp/bat",String(bat,3).c_str());
+  float b = (ESP.getVcc() / 1000.0);
+  /* PUBLISH ALL VALUES AS JSON PAYLOAD VIA MQTT */
+  sprintf(buff, "iot/unit%d", UNIT_NO);
+  JsonObject& root = jsonBuffer.createObject();
+  root["t"] = t; root["h"] = h; root["p"] = p; root["uv"] = uv; root["ir"] = ir; root["v"] = v; root["b"] = b;
+  root.printTo(buff2, sizeof(buff2));
+  client.publish(buff,buff2,true);
   /* DEEP SLEEEP */
   ESP.deepSleep(ESP_SLEEP * 1000000);
 }
