@@ -1,10 +1,10 @@
 Home solar powered meteostation with ESP-12
 -------------------------------------------
-- li-ion solar charged battery
+- LiPol battery solar charged
 - ESP-12E programmed with Arduino IDE
 - data sending via MQTT
+- wifi credentials are set/managed via WiFiManager
 - used sensors:
-    - DHT22   - humi,temp
-    - BME280  - humi,temp,pressure
-    - TSL2561 - visible light,IR
+    - BME280  - pressure (humi and temp values are slightly over)
     - SI1145  - visible lgiht,IR,UV
+    - HTU21D  - temp,humi
